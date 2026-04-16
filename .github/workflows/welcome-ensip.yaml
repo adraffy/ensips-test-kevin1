@@ -42,7 +42,7 @@ jobs:
           gh pr comment "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
             --body "$(cat <<'EOF'
-          Thanks for submitting an ENSIP! A maintainer will review your proposal and assign it a permanent number using `/assign-ensip`.
+          Thanks for submitting an ENSIP! An editor will review your proposal and assign it a permanent number using `/assign-ensip`.
 
           In the meantime, please make sure your proposal follows the [submission checklist](https://github.com/ensdomains/ensips#submission-checklist).
           EOF
