@@ -59,6 +59,7 @@ jobs:
         run: |
           NUM=${{ steps.already.outputs.num }}
           gh pr comment "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
             --body "This PR has already been assigned **ENSIP-${NUM}**."
 
       - name: Checkout repository
