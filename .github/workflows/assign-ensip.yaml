@@ -24,6 +24,8 @@ jobs:
         || github.event.comment.author_association == 'COLLABORATOR'
       )
     runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.issue.number }}
     steps:
       - name: Generate app token
         id: app-token
@@ -42,16 +44,16 @@ jobs:
         id: number
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           # Get highest number from the default branch
           MASTER_MAX=$(ls ensips/ | grep -oE '^[0-9]+\.md$' | sed 's/\.md$//' | sort -n | tail -1)
           MASTER_MAX=${MASTER_MAX:-0}
           echo "Highest number on default branch: $MASTER_MAX"
 
-          # Get highest number from open PRs (already-assigned but not yet merged)
+          # Get highest number from ALL PRs (open + closed) to avoid reusing
+          # numbers from closed/abandoned PRs
           PR_MAX=0
-          PR_NUMBERS=$(gh pr list --state open --json number --jq '.[].number')
+          PR_NUMBERS=$(gh pr list --state all --json number --jq '.[].number')
 
           for pr_num in $PR_NUMBERS; do
             if [ "$pr_num" = "$PR_NUMBER" ]; then
@@ -69,7 +71,7 @@ jobs:
             done
           done
 
-          echo "Highest number in open PRs: $PR_MAX"
+          echo "Highest number across all PRs: $PR_MAX"
 
           if [ "$MASTER_MAX" -gt "$PR_MAX" ]; then
             HIGHEST=$MASTER_MAX
@@ -84,35 +86,92 @@ jobs:
       - name: Checkout PR branch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh pr checkout "${{ github.event.issue.number }}"
+        run: gh pr checkout "$PR_NUMBER"
 
-      - name: Check for ensips/x.md
-        id: check
+      - name: Find new ENSIP file
+        id: find
         run: |
-          if [ -f "ensips/x.md" ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
+          # Find .md files in ensips/ that are new in this PR (not on main)
+          NEW_FILES=$(git diff --name-only --diff-filter=A origin/main...HEAD -- 'ensips/*.md' || true)
+          FILE_COUNT=$(echo "$NEW_FILES" | grep -c . || true)
+
+          echo "New .md files in ensips/: $NEW_FILES (count: $FILE_COUNT)"
+
+          if [ "$FILE_COUNT" -eq 0 ] || [ -z "$NEW_FILES" ]; then
+            # No new files — check if a number was already assigned on this branch
+            ASSIGNED=$(git diff --name-only origin/main...HEAD -- 'ensips/*.md' \
+              | grep -oE 'ensips/[0-9]+\.md$' || true)
+
+            if [ -n "$ASSIGNED" ]; then
+              NUM=$(echo "$ASSIGNED" | head -1 | sed 's|ensips/||; s|\.md||')
+              echo "status=already_assigned" >> "$GITHUB_OUTPUT"
+              echo "assigned_num=$NUM" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=no_file" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "$FILE_COUNT" -eq 1 ]; then
+            echo "status=found" >> "$GITHUB_OUTPUT"
+            echo "file=$NEW_FILES" >> "$GITHUB_OUTPUT"
           else
-            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "status=multiple" >> "$GITHUB_OUTPUT"
+            echo "files=$NEW_FILES" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Comment if no x.md found
-        if: steps.check.outputs.found == 'false'
+      - name: Comment if already assigned
+        if: steps.find.outputs.status == 'already_assigned'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh pr comment "${{ github.event.issue.number }}" \
-            --body "No \`ensips/x.md\` found in this PR. The \`/assign-ensip\` command expects the new ENSIP file to be named \`x.md\`."
+          NUM=${{ steps.find.outputs.assigned_num }}
+          gh pr comment "$PR_NUMBER" \
+            --body "This PR has already been assigned **ENSIP-${NUM}**."
+
+      - name: Comment if no ENSIP file found
+        if: steps.find.outputs.status == 'no_file'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --body "No new ENSIP file found in this PR. The \`/assign-ensip\` command expects a new \`.md\` file in the \`ensips/\` directory."
+
+      - name: Comment if multiple files found
+        if: steps.find.outputs.status == 'multiple'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --body "Multiple new ENSIP files found in this PR. Please submit one ENSIP per PR."
 
       - name: Rename file and update title
-        if: steps.check.outputs.found == 'true'
+        if: steps.find.outputs.status == 'found'
+        id: rename
         run: |
           NEXT=${{ steps.number.outputs.next }}
-          git mv ensips/x.md "ensips/${NEXT}.md"
-          sed -i "s/^# ENSIP-[Xx]:/# ENSIP-${NEXT}:/" "ensips/${NEXT}.md"
-          echo "Renamed ensips/x.md -> ensips/${NEXT}.md and updated title"
+          FILE="${{ steps.find.outputs.file }}"
+          FILENAME=$(basename "$FILE")
+
+          # Rename the file to the assigned number
+          git mv "$FILE" "ensips/${NEXT}.md"
+
+          # Update the H1 title in the file
+          # Extract the current H1 line
+          H1_LINE=$(grep -m1 '^# ' "ensips/${NEXT}.md" || true)
+
+          if echo "$H1_LINE" | grep -qE '^# ENSIP-([0-9]+|[Xx]):'; then
+            # Standard format: # ENSIP-X: Title or # ENSIP-123: Title
+            # Replace the number/placeholder, keep the title text
+            sed -i "s/^# ENSIP-\([0-9]\+\|[Xx]\):/# ENSIP-${NEXT}:/" "ensips/${NEXT}.md"
+          elif echo "$H1_LINE" | grep -qE '^# .+'; then
+            # Non-standard H1 — extract title text and rewrite
+            TITLE_TEXT=$(echo "$H1_LINE" | sed 's/^# //')
+            sed -i "s|^# .*|# ENSIP-${NEXT}: ${TITLE_TEXT}|" "ensips/${NEXT}.md"
+          fi
+
+          echo "Renamed $FILE -> ensips/${NEXT}.md"
+          echo "old_file=$FILENAME" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push
-        if: steps.check.outputs.found == 'true'
+        if: steps.find.outputs.status == 'found'
         id: push
         run: |
           NEXT=${{ steps.number.outputs.next }}
@@ -127,25 +186,47 @@ jobs:
             echo "pushed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Comment on push failure
-        if: steps.check.outputs.found == 'true' && steps.push.outputs.pushed == 'false'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          gh pr comment "${{ github.event.issue.number }}" \
-            --body "Failed to push the ENSIP number assignment. For fork PRs, ensure the contributor has enabled 'Allow edits from maintainers'."
-
-      - name: Comment on successful assignment
-        if: steps.check.outputs.found == 'true' && steps.push.outputs.pushed == 'true'
+      - name: Update PR title
+        if: steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           NEXT=${{ steps.number.outputs.next }}
-          gh pr comment "${{ github.event.issue.number }}" \
+
+          # Get current PR title
+          CURRENT_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
+
+          # If title already has ENSIP-X or ENSIP-{number} prefix, replace it
+          if echo "$CURRENT_TITLE" | grep -qE '^ENSIP-([0-9]+|[Xx]):'; then
+            NEW_TITLE=$(echo "$CURRENT_TITLE" | sed "s/^ENSIP-\([0-9]\+\|[Xx]\):/ENSIP-${NEXT}:/")
+          else
+            # Prepend the ENSIP number
+            NEW_TITLE="ENSIP-${NEXT}: ${CURRENT_TITLE}"
+          fi
+
+          gh pr edit "$PR_NUMBER" --title "$NEW_TITLE"
+          echo "Updated PR title to: $NEW_TITLE"
+
+      - name: Comment on push failure
+        if: steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --body "Failed to push the ENSIP number assignment. For fork PRs, ensure the contributor has enabled 'Allow edits from maintainers'."
+
+      - name: Comment on successful assignment
+        if: steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          NEXT=${{ steps.number.outputs.next }}
+          OLD_FILE=${{ steps.rename.outputs.old_file }}
+          gh pr comment "$PR_NUMBER" \
             --body "$(cat <<EOF
           This proposal has been assigned **ENSIP-${NEXT}**.
 
-          - File renamed: \`ensips/x.md\` → \`ensips/${NEXT}.md\`
-          - Title updated: \`ENSIP-X\` → \`ENSIP-${NEXT}\`
+          - File renamed: \`ensips/${OLD_FILE}\` → \`ensips/${NEXT}.md\`
+          - Title updated to include \`ENSIP-${NEXT}\`
           EOF
           )"
