@@ -45,38 +45,27 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Get highest number from the default branch
+          # Source 1: highest numbered file on the default branch (merged ENSIPs)
           MASTER_MAX=$(ls ensips/ | grep -oE '^[0-9]+\.md$' | sed 's/\.md$//' | sort -n | tail -1)
           MASTER_MAX=${MASTER_MAX:-0}
           echo "Highest number on default branch: $MASTER_MAX"
 
-          # Get highest number from ALL PRs (open + closed) to avoid reusing
-          # numbers from closed/abandoned PRs
-          PR_MAX=0
-          PR_NUMBERS=$(gh pr list --state all --json number --jq '.[].number')
+          # Source 2: highest number ever assigned by the bot (from PR comments)
+          # The bot always posts "This proposal has been assigned **ENSIP-{N}**."
+          # This is the authoritative record — immune to self-assigned filenames
+          # and persists even after PRs are closed.
+          BOT_MAX=$(gh api "repos/${{ github.repository }}/issues/comments" \
+            --paginate \
+            --jq '.[] | select(.body | contains("This proposal has been assigned **ENSIP-")) | .body' \
+            | grep -oE 'ENSIP-[0-9]+' | sed 's/ENSIP-//' | sort -n | tail -1)
+          BOT_MAX=${BOT_MAX:-0}
+          echo "Highest number assigned by bot: $BOT_MAX"
 
-          for pr_num in $PR_NUMBERS; do
-            if [ "$pr_num" = "$PR_NUMBER" ]; then
-              continue
-            fi
-
-            ENSIP_NUMS=$(gh pr view "$pr_num" --json files --jq '.files[].path' \
-              | grep -oE 'ensips/[0-9]+\.md$' \
-              | sed 's|ensips/||; s|\.md||' || true)
-
-            for n in $ENSIP_NUMS; do
-              if [ "$n" -gt "$PR_MAX" ]; then
-                PR_MAX=$n
-              fi
-            done
-          done
-
-          echo "Highest number across all PRs: $PR_MAX"
-
-          if [ "$MASTER_MAX" -gt "$PR_MAX" ]; then
+          # Take the maximum and add 1
+          if [ "$MASTER_MAX" -gt "$BOT_MAX" ]; then
             HIGHEST=$MASTER_MAX
           else
-            HIGHEST=$PR_MAX
+            HIGHEST=$BOT_MAX
           fi
 
           NEXT=$((HIGHEST + 1))
@@ -154,12 +143,10 @@ jobs:
           git mv "$FILE" "ensips/${NEXT}.md"
 
           # Update the H1 title in the file
-          # Extract the current H1 line
           H1_LINE=$(grep -m1 '^# ' "ensips/${NEXT}.md" || true)
 
           if echo "$H1_LINE" | grep -qE '^# ENSIP-([0-9]+|[Xx]):'; then
             # Standard format: # ENSIP-X: Title or # ENSIP-123: Title
-            # Replace the number/placeholder, keep the title text
             sed -i "s/^# ENSIP-\([0-9]\+\|[Xx]\):/# ENSIP-${NEXT}:/" "ensips/${NEXT}.md"
           elif echo "$H1_LINE" | grep -qE '^# .+'; then
             # Non-standard H1 — extract title text and rewrite
@@ -192,15 +179,11 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           NEXT=${{ steps.number.outputs.next }}
-
-          # Get current PR title
           CURRENT_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
 
-          # If title already has ENSIP-X or ENSIP-{number} prefix, replace it
           if echo "$CURRENT_TITLE" | grep -qE '^ENSIP-([0-9]+|[Xx]):'; then
             NEW_TITLE=$(echo "$CURRENT_TITLE" | sed "s/^ENSIP-\([0-9]\+\|[Xx]\):/ENSIP-${NEXT}:/")
           else
-            # Prepend the ENSIP number
             NEW_TITLE="ENSIP-${NEXT}: ${CURRENT_TITLE}"
           fi
 
