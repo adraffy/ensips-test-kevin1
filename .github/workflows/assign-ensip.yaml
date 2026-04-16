@@ -1,0 +1,147 @@
+name: Assign ENSIP Number
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: assign-ensip
+  cancel-in-progress: false
+
+jobs:
+  assign:
+    # Only run for PR comments containing /assign-ensip from authorized users
+    if: >-
+      github.event.issue.pull_request
+      && contains(github.event.comment.body, '/assign-ensip')
+      && (
+        github.event.comment.author_association == 'OWNER'
+        || github.event.comment.author_association == 'MEMBER'
+        || github.event.comment.author_association == 'COLLABORATOR'
+      )
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.BOT_TOKEN || github.token }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history needed for branch operations
+          fetch-depth: 0
+          # BOT_TOKEN (PAT) is required for pushing to fork PRs.
+          # Falls back to the default GITHUB_TOKEN for same-repo branches.
+          token: ${{ secrets.BOT_TOKEN || github.token }}
+
+      - name: Compute next ENSIP number
+        id: number
+        run: |
+          # Get highest number from the default branch
+          MASTER_MAX=$(ls ensips/ | grep -oE '^[0-9]+\.md$' | sed 's/\.md$//' | sort -n | tail -1)
+          MASTER_MAX=${MASTER_MAX:-0}
+          echo "Highest number on default branch: $MASTER_MAX"
+
+          # Get highest number from open PRs (already-assigned but not yet merged)
+          PR_MAX=0
+          PR_NUMBERS=$(gh pr list --state open --json number --jq '.[].number')
+
+          for pr_num in $PR_NUMBERS; do
+            # Skip the current PR
+            if [ "$pr_num" = "$PR_NUMBER" ]; then
+              continue
+            fi
+
+            ENSIP_NUMS=$(gh pr view "$pr_num" --json files --jq '.files[].path' \
+              | grep -oE 'ensips/[0-9]+\.md$' \
+              | sed 's|ensips/||; s|\.md||' || true)
+
+            for n in $ENSIP_NUMS; do
+              if [ "$n" -gt "$PR_MAX" ]; then
+                PR_MAX=$n
+              fi
+            done
+          done
+
+          echo "Highest number in open PRs: $PR_MAX"
+
+          # Take the maximum and add 1
+          if [ "$MASTER_MAX" -gt "$PR_MAX" ]; then
+            HIGHEST=$MASTER_MAX
+          else
+            HIGHEST=$PR_MAX
+          fi
+
+          NEXT=$((HIGHEST + 1))
+          echo "Next ENSIP number: $NEXT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR branch
+        run: gh pr checkout "$PR_NUMBER"
+
+      - name: Check for ensips/x.md
+        id: check
+        run: |
+          if [ -f "ensips/x.md" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment if no x.md found
+        if: steps.check.outputs.found == 'false'
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --body "No \`ensips/x.md\` found in this PR. The \`/assign-ensip\` command expects the new ENSIP file to be named \`x.md\`."
+
+      - name: Rename file and update title
+        if: steps.check.outputs.found == 'true'
+        run: |
+          NEXT=${{ steps.number.outputs.next }}
+
+          # Rename the file
+          git mv ensips/x.md "ensips/${NEXT}.md"
+
+          # Update the H1 title from ENSIP-X to ENSIP-{N}
+          sed -i "s/^# ENSIP-[Xx]:/# ENSIP-${NEXT}:/" "ensips/${NEXT}.md"
+
+          echo "Renamed ensips/x.md -> ensips/${NEXT}.md and updated title"
+
+      - name: Commit and push
+        if: steps.check.outputs.found == 'true'
+        id: push
+        run: |
+          NEXT=${{ steps.number.outputs.next }}
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Assign ENSIP-${NEXT}"
+
+          if git push; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on push failure
+        if: steps.check.outputs.found == 'true' && steps.push.outputs.pushed == 'false'
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --body "Failed to push the ENSIP number assignment. This usually happens with fork PRs. Please ask a maintainer to set up a \`BOT_TOKEN\` secret (a PAT with \`repo\` scope) or manually rename the file."
+
+      - name: Comment on successful assignment
+        if: steps.check.outputs.found == 'true' && steps.push.outputs.pushed == 'true'
+        run: |
+          NEXT=${{ steps.number.outputs.next }}
+          gh pr comment "$PR_NUMBER" \
+            --body "$(cat <<EOF
+          This proposal has been assigned **ENSIP-${NEXT}**.
+
+          - File renamed: \`ensips/x.md\` → \`ensips/${NEXT}.md\`
+          - Title updated: \`ENSIP-X\` → \`ENSIP-${NEXT}\`
+          EOF
+          )"
