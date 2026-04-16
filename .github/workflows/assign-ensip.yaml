@@ -24,21 +24,25 @@ jobs:
         || github.event.comment.author_association == 'COLLABORATOR'
       )
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.BOT_TOKEN || github.token }}
-      PR_NUMBER: ${{ github.event.issue.number }}
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Full history needed for branch operations
           fetch-depth: 0
-          # BOT_TOKEN (PAT) is required for pushing to fork PRs.
-          # Falls back to the default GITHUB_TOKEN for same-repo branches.
-          token: ${{ secrets.BOT_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Compute next ENSIP number
         id: number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           # Get highest number from the default branch
           MASTER_MAX=$(ls ensips/ | grep -oE '^[0-9]+\.md$' | sed 's/\.md$//' | sort -n | tail -1)
@@ -50,7 +54,6 @@ jobs:
           PR_NUMBERS=$(gh pr list --state open --json number --jq '.[].number')
 
           for pr_num in $PR_NUMBERS; do
-            # Skip the current PR
             if [ "$pr_num" = "$PR_NUMBER" ]; then
               continue
             fi
@@ -68,7 +71,6 @@ jobs:
 
           echo "Highest number in open PRs: $PR_MAX"
 
-          # Take the maximum and add 1
           if [ "$MASTER_MAX" -gt "$PR_MAX" ]; then
             HIGHEST=$MASTER_MAX
           else
@@ -80,7 +82,9 @@ jobs:
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR branch
-        run: gh pr checkout "$PR_NUMBER"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh pr checkout "${{ github.event.issue.number }}"
 
       - name: Check for ensips/x.md
         id: check
@@ -93,21 +97,18 @@ jobs:
 
       - name: Comment if no x.md found
         if: steps.check.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh pr comment "$PR_NUMBER" \
+          gh pr comment "${{ github.event.issue.number }}" \
             --body "No \`ensips/x.md\` found in this PR. The \`/assign-ensip\` command expects the new ENSIP file to be named \`x.md\`."
 
       - name: Rename file and update title
         if: steps.check.outputs.found == 'true'
         run: |
           NEXT=${{ steps.number.outputs.next }}
-
-          # Rename the file
           git mv ensips/x.md "ensips/${NEXT}.md"
-
-          # Update the H1 title from ENSIP-X to ENSIP-{N}
           sed -i "s/^# ENSIP-[Xx]:/# ENSIP-${NEXT}:/" "ensips/${NEXT}.md"
-
           echo "Renamed ensips/x.md -> ensips/${NEXT}.md and updated title"
 
       - name: Commit and push
@@ -115,9 +116,8 @@ jobs:
         id: push
         run: |
           NEXT=${{ steps.number.outputs.next }}
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "ensips-earl[bot]"
+          git config user.email "3398141+ensips-earl[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Assign ENSIP-${NEXT}"
 
@@ -129,15 +129,19 @@ jobs:
 
       - name: Comment on push failure
         if: steps.check.outputs.found == 'true' && steps.push.outputs.pushed == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh pr comment "$PR_NUMBER" \
-            --body "Failed to push the ENSIP number assignment. This usually happens with fork PRs. Please ask a maintainer to set up a \`BOT_TOKEN\` secret (a PAT with \`repo\` scope) or manually rename the file."
+          gh pr comment "${{ github.event.issue.number }}" \
+            --body "Failed to push the ENSIP number assignment. For fork PRs, ensure the contributor has enabled 'Allow edits from maintainers'."
 
       - name: Comment on successful assignment
         if: steps.check.outputs.found == 'true' && steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           NEXT=${{ steps.number.outputs.next }}
-          gh pr comment "$PR_NUMBER" \
+          gh pr comment "${{ github.event.issue.number }}" \
             --body "$(cat <<EOF
           This proposal has been assigned **ENSIP-${NEXT}**.
 

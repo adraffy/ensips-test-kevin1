@@ -13,22 +13,31 @@ jobs:
   welcome:
     runs-on: ubuntu-latest
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Check for existing welcome comment
         id: check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           EXISTING=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("Thanks for submitting an ENSIP"))] | length')
+            --jq '[.[] | select(.user.login == "ensips-earl[bot]") | select(.body | contains("Thanks for submitting an ENSIP"))] | length')
 
           if [ "$EXISTING" -gt "0" ]; then
             echo "already_welcomed=true" >> "$GITHUB_OUTPUT"
           else
             echo "already_welcomed=false" >> "$GITHUB_OUTPUT"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Post welcome comment
         if: steps.check.outputs.already_welcomed == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
@@ -38,5 +47,3 @@ jobs:
           In the meantime, please make sure your proposal follows the [submission checklist](https://github.com/ensdomains/ensips#submission-checklist).
           EOF
           )"
-        env:
-          GH_TOKEN: ${{ github.token }}
