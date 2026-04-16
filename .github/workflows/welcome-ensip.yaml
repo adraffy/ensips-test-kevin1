@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened]
     paths:
-      - "ensips/x.md"
+      - "ensips/**.md"
 
 permissions:
   pull-requests: write
