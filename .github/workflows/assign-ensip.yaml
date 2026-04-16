@@ -34,13 +34,42 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      - name: Check if already assigned
+        id: already
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Check if the bot already posted an assignment comment on THIS PR
+          ASSIGNED_NUM=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.body | contains("This proposal has been assigned **ENSIP-")) | .body' \
+            | grep -oE 'ENSIP-[0-9]+' | sed 's/ENSIP-//' | head -1 || true)
+
+          if [ -n "$ASSIGNED_NUM" ]; then
+            echo "assigned=true" >> "$GITHUB_OUTPUT"
+            echo "num=$ASSIGNED_NUM" >> "$GITHUB_OUTPUT"
+            echo "Already assigned ENSIP-${ASSIGNED_NUM} on this PR"
+          else
+            echo "assigned=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment if already assigned
+        if: steps.already.outputs.assigned == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          NUM=${{ steps.already.outputs.num }}
+          gh pr comment "$PR_NUMBER" \
+            --body "This PR has already been assigned **ENSIP-${NUM}**."
+
       - name: Checkout repository
+        if: steps.already.outputs.assigned == 'false'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Compute next ENSIP number
+        if: steps.already.outputs.assigned == 'false'
         id: number
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -78,11 +107,13 @@ jobs:
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR branch
+        if: steps.already.outputs.assigned == 'false'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: gh pr checkout "$PR_NUMBER"
 
       - name: Find new ENSIP file
+        if: steps.already.outputs.assigned == 'false'
         id: find
         run: |
           # Find .md files in ensips/ that are new in this PR (not on main)
@@ -92,17 +123,7 @@ jobs:
           echo "New .md files in ensips/: $NEW_FILES (count: $FILE_COUNT)"
 
           if [ "$FILE_COUNT" -eq 0 ] || [ -z "$NEW_FILES" ]; then
-            # No new files — check if a number was already assigned on this branch
-            ASSIGNED=$(git diff --name-only origin/main...HEAD -- 'ensips/*.md' \
-              | grep -oE 'ensips/[0-9]+\.md$' || true)
-
-            if [ -n "$ASSIGNED" ]; then
-              NUM=$(echo "$ASSIGNED" | head -1 | sed 's|ensips/||; s|\.md||')
-              echo "status=already_assigned" >> "$GITHUB_OUTPUT"
-              echo "assigned_num=$NUM" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=no_file" >> "$GITHUB_OUTPUT"
-            fi
+            echo "status=no_file" >> "$GITHUB_OUTPUT"
           elif [ "$FILE_COUNT" -eq 1 ]; then
             echo "status=found" >> "$GITHUB_OUTPUT"
             echo "file=$NEW_FILES" >> "$GITHUB_OUTPUT"
@@ -110,17 +131,8 @@ jobs:
             echo "status=multiple" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Comment if already assigned
-        if: steps.find.outputs.status == 'already_assigned'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          NUM=${{ steps.find.outputs.assigned_num }}
-          gh pr comment "$PR_NUMBER" \
-            --body "This PR has already been assigned **ENSIP-${NUM}**."
-
       - name: Comment if no ENSIP file found
-        if: steps.find.outputs.status == 'no_file'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'no_file'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -128,7 +140,7 @@ jobs:
             --body "No new ENSIP file found in this PR. The \`/assign-ensip\` command expects a new \`.md\` file in the \`ensips/\` directory."
 
       - name: Comment if multiple files found
-        if: steps.find.outputs.status == 'multiple'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'multiple'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -136,7 +148,7 @@ jobs:
             --body "Multiple new ENSIP files found in this PR. Please submit one ENSIP per PR."
 
       - name: Rename file and update title
-        if: steps.find.outputs.status == 'found'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found'
         id: rename
         run: |
           NEXT=${{ steps.number.outputs.next }}
@@ -162,7 +174,7 @@ jobs:
           echo "old_file=$FILENAME" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push
-        if: steps.find.outputs.status == 'found'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found'
         id: push
         run: |
           NEXT=${{ steps.number.outputs.next }}
@@ -178,7 +190,7 @@ jobs:
           fi
 
       - name: Update PR title
-        if: steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -195,7 +207,7 @@ jobs:
           echo "Updated PR title to: $NEW_TITLE"
 
       - name: Comment on push failure
-        if: steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'false'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'false'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -203,7 +215,7 @@ jobs:
             --body "Failed to push the ENSIP number assignment. For fork PRs, ensure the contributor has enabled 'Allow edits from maintainers'."
 
       - name: Comment on successful assignment
-        if: steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
+        if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
