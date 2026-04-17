@@ -117,8 +117,9 @@ jobs:
         if: steps.already.outputs.assigned == 'false'
         id: find
         run: |
-          # Find .md files in ensips/ that are new in this PR (not on main)
-          NEW_FILES=$(git diff --name-only --diff-filter=A origin/main...HEAD -- 'ensips/*.md' || true)
+          # Find .md files in ensips/ that are new in this PR (not on default branch)
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          NEW_FILES=$(git diff --name-only --diff-filter=A "origin/${DEFAULT_BRANCH}...HEAD" -- 'ensips/*.md' || true)
           FILE_COUNT=$(echo "$NEW_FILES" | grep -c . || true)
 
           echo "New .md files in ensips/: $NEW_FILES (count: $FILE_COUNT)"
