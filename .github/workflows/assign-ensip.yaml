@@ -41,7 +41,7 @@ jobs:
         run: |
           # Check if the bot already posted an assignment comment on THIS PR
           ASSIGNED_NUM=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-            --jq '.[] | select(.body | contains("this proposal is now **ENSIP-")) | .body' \
+            --jq '.[] | select(.body | contains("**ENSIP-")) | .body' \
             | grep -oE 'ENSIP-[0-9]+' | sed 's/ENSIP-//' | head -1 || true)
 
           if [ -n "$ASSIGNED_NUM" ]; then
@@ -81,12 +81,12 @@ jobs:
           echo "Highest number on default branch: $MASTER_MAX"
 
           # Source 2: highest number ever assigned by the bot (from PR comments)
-          # The bot always posts "this proposal is now **ENSIP-{N}**."
+          # Bot assignment comments always contain "**ENSIP-{N}**".
           # This is the authoritative record — immune to self-assigned filenames
           # and persists even after PRs are closed.
           BOT_COMMENTS=$(gh api "repos/${{ github.repository }}/issues/comments" \
             --paginate \
-            --jq '.[] | select(.body | contains("this proposal is now **ENSIP-")) | .body' || true)
+            --jq '.[] | select(.body | contains("**ENSIP-")) | .body' || true)
 
           if [ -n "$BOT_COMMENTS" ]; then
             BOT_MAX=$(echo "$BOT_COMMENTS" | grep -oE 'ENSIP-[0-9]+' | sed 's/ENSIP-//' | sort -n | tail -1 || echo "0")
