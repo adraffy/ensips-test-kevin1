@@ -41,7 +41,7 @@ jobs:
         run: |
           # Check if the bot already posted an assignment comment on THIS PR
           ASSIGNED_NUM=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-            --jq '.[] | select(.body | contains("This proposal has been assigned **ENSIP-")) | .body' \
+            --jq '.[] | select(.body | contains("this proposal is now **ENSIP-")) | .body' \
             | grep -oE 'ENSIP-[0-9]+' | sed 's/ENSIP-//' | head -1 || true)
 
           if [ -n "$ASSIGNED_NUM" ]; then
@@ -60,7 +60,7 @@ jobs:
           NUM=${{ steps.already.outputs.num }}
           gh pr comment "$PR_NUMBER" \
             --repo "${{ github.repository }}" \
-            --body "This PR has already been assigned **ENSIP-${NUM}**."
+            --body "This PR has been safely recorded as **ENSIP-${NUM}**. The number is locked in, no worries."
 
       - name: Checkout repository
         if: steps.already.outputs.assigned == 'false'
@@ -81,12 +81,12 @@ jobs:
           echo "Highest number on default branch: $MASTER_MAX"
 
           # Source 2: highest number ever assigned by the bot (from PR comments)
-          # The bot always posts "This proposal has been assigned **ENSIP-{N}**."
+          # The bot always posts "this proposal is now **ENSIP-{N}**."
           # This is the authoritative record — immune to self-assigned filenames
           # and persists even after PRs are closed.
           BOT_COMMENTS=$(gh api "repos/${{ github.repository }}/issues/comments" \
             --paginate \
-            --jq '.[] | select(.body | contains("This proposal has been assigned **ENSIP-")) | .body' || true)
+            --jq '.[] | select(.body | contains("this proposal is now **ENSIP-")) | .body' || true)
 
           if [ -n "$BOT_COMMENTS" ]; then
             BOT_MAX=$(echo "$BOT_COMMENTS" | grep -oE 'ENSIP-[0-9]+' | sed 's/ENSIP-//' | sort -n | tail -1 || echo "0")
@@ -138,7 +138,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment "$PR_NUMBER" \
-            --body "No new ENSIP file found in this PR. The \`/assign-ensip\` command expects a new \`.md\` file in the \`ensips/\` directory."
+            --body "I looked through this PR but couldn't find a new \`.md\` file in the \`ensips/\` directory. Once one is added, I'll be ready to assign a number."
 
       - name: Comment if multiple files found
         if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'multiple'
@@ -146,7 +146,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment "$PR_NUMBER" \
-            --body "Multiple new ENSIP files found in this PR. Please submit one ENSIP per PR."
+            --body "I found more than one new ENSIP file in this PR. To keep things tidy, I can only assign one number per PR — could you split them into separate PRs?"
 
       - name: Rename file and update title
         if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found'
@@ -213,7 +213,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment "$PR_NUMBER" \
-            --body "Failed to push the ENSIP number assignment. For fork PRs, ensure the contributor has enabled 'Allow edits from maintainers'."
+            --body "I wasn't able to push the changes to this branch. If this is a fork PR, please check that \"Allow edits from maintainers\" is enabled and try again."
 
       - name: Comment on successful assignment
         if: steps.already.outputs.assigned == 'false' && steps.find.outputs.status == 'found' && steps.push.outputs.pushed == 'true'
@@ -224,9 +224,9 @@ jobs:
           OLD_FILE=${{ steps.rename.outputs.old_file }}
           gh pr comment "$PR_NUMBER" \
             --body "$(cat <<EOF
-          This proposal has been assigned **ENSIP-${NEXT}**.
+          All set — this proposal is now **ENSIP-${NEXT}**. I've updated everything for you:
 
-          - File renamed: \`ensips/${OLD_FILE}\` → \`ensips/${NEXT}.md\`
-          - Title updated to include \`ENSIP-${NEXT}\`
+          - Renamed \`ensips/${OLD_FILE}\` → \`ensips/${NEXT}.md\`
+          - Updated the title to include \`ENSIP-${NEXT}\`
           EOF
           )"
